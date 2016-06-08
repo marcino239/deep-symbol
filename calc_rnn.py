@@ -41,24 +41,23 @@ class CharacterTable(object):
 
 
 class DataGenerator( object ):
-	def generate( data_size, digit_max_len ):
+	def __init__( self ):
+		pass
+	
+	def generate( self, data_size, digit_max_len ):
 		
 		questions = []
 		answers = []
 		seen = set()
 		
-		f = lambda: ''.join( np.random.choice( list( '0123456789' ) ) for i in range( np.random.randint( 1, digit_max_len + 1) ) )
+		f = lambda: ''.join( [ np.random.choice( list( '0123456789' ) ) for i in range( np.random.randint( 1, digit_max_len + 1) ) ] )
 		g = lambda: np.random.choice( list( '+-*/' ) )
 		h = lambda: np.random.choice( list( 'LR' ) )
 
 		i = 0
-		while i < set_size:
-			n1 = f()
-			n2 = f()
-			n3 = f()
-			
-			o1 = g()
-			o2 = g()
+		while i < data_size:
+			n1, n2, n3 = f(), f(), f()
+			o1, o2 = g(), g()
 			
 			q = []
 			a = []
@@ -94,6 +93,36 @@ class DataGenerator( object ):
 				i += 1
 				
 		return questions, answers
+				
+	def vectorize( data_set, q_maxlen, a_maxlen ):
+		Q = []
+		A = []
+
+		for q, a in data_set:
+			q_ = [ word_idx[w] for w in story ]
+        xq = [word_idx[w] for w in query]
+        y = np.zeros(len(word_idx) + 1)  # let's not forget that index 0 is reserved
+        y[word_idx[answer]] = 1
+        X.append(x)
+        Xq.append(xq)
+        Y.append(y)
+    return pad_sequences(X, maxlen=story_maxlen), pad_sequences(Xq, maxlen=query_maxlen), np.array(Y)
+
+
+	def create_train_test( self, train_size, test_size, digit_max_len ):
+		full_set = self.generate( train_size + test_size, digit_max_len )
+		self.train_set = full_set[ :train_size ]
+		self.test_set = test_size[ train_size: ]
+
+		# TODO - convert to single chars
+		self.alphabet = sorted( reduce( lambda x, y: x | y, ( set( q + a ) for q, a in full_set ) ) )
+		self.alphabet_size = len( self.vocab )
+
+		q_maxlen = max( map( len, (x for x, _ in full_set ) ) )
+		a_maxlen = max( map( len, (x for _, x in full_set ) ) )
+
+		self.train_q, self.train_a = vectorize( self.train_set, q_maxlen, a_maxlen )
+		self.train_q, self.train_a = vectorize( self.test_set, q_maxlen, a_maxlen )
 
 class colors:
 	ok = '\033[92m'
