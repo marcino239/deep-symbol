@@ -7,10 +7,11 @@ https://raw.githubusercontent.com/fchollet/keras/master/examples/addition_rnn.py
 from __future__ import print_function
 
 import numpy as np
+import keras
 
 from keras.models import Sequential
 from keras.engine.training import slice_X
-from keras.layers import Activation, TimeDistributed, Dense, RepeatVector, recurrent
+from keras.layers import Activation, TimeDistributed, Dense, RepeatVector, recurrent, Dropout, Merge
 from six.moves import range
 
 
@@ -41,30 +42,24 @@ class CharacterTable( object ):
 
 
 class DataGenerator( object ):
-	def __init__( self, train_size, test_size, number_max_len ):
+	def __init__( self, train_size, test_size, number_max_len, dataset_type='calc' ):
+		self.dataset_type = dataset_type
 		self.create_train_test( train_size, test_size, number_max_len )
 
-	def generate( self, data_size, number_max_len ):
-		
-		questions = []
-		answers = []
-		seen = set()
-		
-		f = lambda: ''.join( [ np.random.choice( list( '123456789' ) ) ] + \
-								[ np.random.choice( list( '0123456789' ) ) \
-									for i in range( np.random.randint( 1, number_max_len ) ) ] )
-		g = lambda: np.random.choice( list( '+-*/' ) )
-		h = lambda: np.random.choice( list( 'LR' ) )
+	def get_q_a( self, n, o, bracket ):
+		n1, n2, n3 = n
+		o1, o2 = o
 
-		i = 0
-		while i < data_size:
-			n1, n2, n3 = f(), f(), f()
-			o1, o2 = g(), g()
-			
-			q = []
-			a = []
-			
-			if h() == 'L':
+		if self.dataset_type == 'calc':
+			if bracket == 'L':
+				q = [ n1, o1, '(', n2, o2, n3, ')', '=' ]
+				a = [ n2, o2, n3, '=', o1, n1, '=' ]
+			else:
+				q = [ '(', n1, o1, n2, ')', o2, n3, '=' ]
+				a = [ n1, o1, n2, '=', o2, n3, '=' ]
+
+		elif self.dataset_type == 'calc_old':
+			if bracket == 'L':
 				if o1 in '*/':
 					if o2 in '-+':
 						q = [ n1, o1, '(', n2, o2, n3, ')', '=' ]
@@ -86,9 +81,34 @@ class DataGenerator( object ):
 				else:
 					q = [ n1, o1, n2, o2, n3, '=' ]
 					a = [ n1, o1, n2, o2, n3, '=' ]
-				
+
+		elif self.dataset_type == 'reverse_seq':
+			q = [ n1, '+', n2, '+', n3, '=' ]
+			a = [ n3, '+', n2, '+', n1, '=' ]
+
+		return q, a
+
+	def generate( self, data_size, number_max_len ):
+		
+		questions = []
+		answers = []
+		seen = set()
+		
+		f = lambda: ''.join( [ np.random.choice( list( '123456789' ) ) ] + \
+								[ np.random.choice( list( '0123456789' ) ) \
+									for i in range( np.random.randint( 1, number_max_len ) ) ] )
+		g = lambda: np.random.choice( list( '+-*/' ) )
+		h = lambda: np.random.choice( list( 'LR' ) )
+
+		i = 0
+		while i < data_size:
+			n = [ f(), f(), f() ]
+			o = [  g(), g() ]
+			
+			q, a = self.get_q_a( n, o, h() )
+			
 			qstr = ''.join( q )
-			astr = ''.join( q )
+			astr = ''.join( a )
 			if qstr not in seen:
 				questions.append( qstr )
 				answers.append( astr )
@@ -138,16 +158,23 @@ class DataGenerator( object ):
 
 	def validate( self ):
 		for q, a in zip( self.train_q, self.train_a ):
-			qstr = datagen.alphabet.decode( q ).replace( '=', '' )
-			astr = datagen.alphabet.decode( a ).replace( '=', '' )
+			try:
+				qstr = datagen.alphabet.decode( q ).replace( '=', '' )
+				astr = datagen.alphabet.decode( a ).replace( '=', '' )
 			
-			assert eval( qstr ) == eval( astr )
+				assert eval( qstr ) == eval( astr )
+			except ZeroDivisionError as e:
+				print( 'q: {0}, a: {1}'.format( qstr, astr ) )
 
 		for q, a in zip( self.test_q, self.test_a ):
-			qstr = datagen.alphabet.decode( q ).replace( '=', '' )
-			astr = datagen.alphabet.decode( a ).replace( '=', '' )
+			try:
+				qstr = datagen.alphabet.decode( q ).replace( '=', '' )
+				astr = datagen.alphabet.decode( a ).replace( '=', '' )
 			
-			assert eval( qstr ) == eval( astr )
+				assert eval( qstr ) == eval( astr )
+
+			except ZeroDivisionError as e:
+				print( 'q: {0}, a: {1}'.format( qstr, astr ) )
 
 
 class colors:
@@ -156,33 +183,28 @@ class colors:
 	close = '\033[0m'
 
 # Parameters for the model and dataset
-TRAINING_SIZE = 5000
+TRAINING_SIZE = 100000
 DIGITS = 3
-INVERT = True
+INVERT = False
 
 # Try replacing GRU, or SimpleRNN
 RNN = recurrent.LSTM
-HIDDEN_SIZE = 128
-BATCH_SIZE = 128
-LAYERS = 1
-MAXLEN = DIGITS + 1 + DIGITS
+HIDDEN_SIZE = 50
+BATCH_SIZE = 512
+LAYERS = 2
 
-print( 'Generating data...' )
-datagen = DataGenerator( TRAINING_SIZE, TRAINING_SIZE / 5, MAXLEN )
+USE_BIDIRECTIONAL = True
 
-print( 'Validating data' )
-datagen.validate()
+print( 'Generating data' )
+datagen = DataGenerator( TRAINING_SIZE, TRAINING_SIZE / 5, DIGITS, 'reverse_seq' )
+
+#print( 'Validating data' )
+#datagen.validate()
 
 X, y = datagen.train_X, datagen.train_y
 
 print( X.shape )
 print( y.shape )
-
-# Shuffle (X, y) in unison as the later parts of X will almost all be larger digits
-#indices = np.arange(len(y))
-#np.random.shuffle(indices)
-#X = X[indices]
-#y = y[indices]
 
 # Explicitly set apart 10% for validation data that we never train over
 split_at = len(X) - len(X) / 10
@@ -190,18 +212,48 @@ X_train, X_val = slice_X( X, 0, split_at ), slice_X( X, split_at )
 y_train, y_val = y[ : split_at ], y[ split_at : ]
 
 
-print('Build model...')
+print('Build model')
 model = Sequential()
 # "Encode" the input sequence using an RNN, producing an output of HIDDEN_SIZE
 # note: in a situation where your input sequences have a variable length,
 # use input_shape=(None, nb_feature).
-model.add( RNN( HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ], return_sequences=True ) )
+
+left = Sequential()
+left.add( RNN( HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ], return_sequences=True ) )
+if USE_BIDIRECTIONAL:
+	right = Sequential()
+	right.add( RNN( HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ],
+			 return_sequences=True, go_backwards = True ) )
+	
+	model.add( Merge( [ left, right ], mode = 'sum' ) )
+else:
+	model.add( left, mode = 'sum' )
+
+model.add( Dropout( 0.3 ) )
+
+def fork_model( model ):
+	forks = []
+	for i in range( 2 ):
+		f = Sequential()
+		f.add( model )
+		forks.append( f )
+
+	return forks
 
 # The decoder RNN could be multiple layers stacked or a single layer
 for _ in range( LAYERS ):
-    model.add( RNN( HIDDEN_SIZE, return_sequences=True) )
+	if USE_BIDIRECTIONAL:
+		left, right = fork_model( model )
+		left.add( RNN( HIDDEN_SIZE, return_sequences=True ) )
+		right.add( RNN( HIDDEN_SIZE, return_sequences=True, go_backwards=True ) )
+	else:
+		model.add( RNN( HIDDEN_SIZE, return_sequences=True ) )
+
+	model.add( Dropout( 0.3 ) )
+
 
 # For each of step of the output sequence, decide which character should be chosen
+model.add( Dropout( 0.3 ) )
 model.add( TimeDistributed( Dense( len( datagen.alphabet.chars ) ) ) )
 model.add( Activation( 'softmax' ) )
 
@@ -209,23 +261,51 @@ model.compile( loss='categorical_crossentropy',
               optimizer='adam',
               metrics=[ 'accuracy' ] )
 
+# stream events
+keras.callbacks.RemoteMonitor( root='http://localhost:9000' )
+
+# early stopping
+keras.callbacks.EarlyStopping( monitor='val_loss', patience=0, verbose=1, mode='auto' )
+
+# model checkpoint
+keras.callbacks.ModelCheckpoint( 'model/checkpoint', monitor='val_loss', verbose=0, save_best_only=False, mode='auto' )
+
+
 # Train the model each generation and show predictions against the validation dataset
 for iteration in range( 1, 200 ):
-    print()
-    print( '-' * 50 )
-    print( 'Iteration', iteration )
-    model.fit( X_train, y_train, batch_size=BATCH_SIZE, nb_epoch=1,
-              validation_data=(X_val, y_val) )
-    ###
-    # Select 10 samples from the validation set at random so we can visualize errors
-    for i in range(10):
-        ind = np.random.randint( 0, len( X_val ) )
-        rowX, rowy = X_val[np.array([ind])], y_val[np.array([ind])]
-        preds = model.predict_classes(rowX, verbose=0)
-        q = datagen.alphabet.decode(rowX[0])
-        correct = datagen.alphabet.decode(rowy[0])
-        guess = datagen.alphabet.decode(preds[0], calc_argmax=False)
-        print('Q', q[::-1] if INVERT else q)
-        print('T', correct)
-        print(colors.ok + '☑' + colors.close if correct == guess else colors.fail + '☒' + colors.close, guess)
-        print('---')
+	print()
+	print( '-' * 50 )
+	print( 'Iteration', iteration )
+
+
+	x_train_in = [ X_train, X_train ] if USE_BIDIRECTIONAL else X_train
+	x_val_in = [ X_val, X_val ] if USE_BIDIRECTIONAL else X_val
+
+	model.fit( x_train_in, y_train, batch_size=BATCH_SIZE, nb_epoch=1,
+			validation_data=[ x_val_in, y_val ] )
+	###
+	# Select 10 samples from the validation set at random so we can visualize errors
+	for i in range(10):
+		ind = np.random.randint( 0, len( X_val ) )
+		rowX, rowy = X_val[np.array([ind])], y_val[np.array([ind])]
+		q = datagen.alphabet.decode(rowX[0])
+		rowX = [ rowX, rowX ] if USE_BIDIRECTIONAL else rowX
+
+		preds = model.predict_classes(rowX, verbose=0)
+
+		correct = datagen.alphabet.decode(rowy[0])
+		guess = datagen.alphabet.decode(preds[0], calc_argmax=False)
+		print('Q', q[::-1] if INVERT else q)
+		print('T', correct)
+		print(colors.ok + '☑' + colors.close if correct == guess else colors.fail + '☒' + colors.close, guess)
+		print('---')
+
+	# Shuffle (X, y) in unison as the later parts of X will almost all be larger digits
+	indices = np.arange( X_train.shape[0] )
+	np.random.shuffle( indices )
+	X_train = X_train[ indices ]
+	y_train = y_train[ indices ]
+
+# save model
+open( 'model/model.json', 'w' ).write( model.to_json() )
+model.save_weights( 'model/model_weights.h5' )
