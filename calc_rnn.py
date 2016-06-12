@@ -8,6 +8,9 @@ from __future__ import print_function
 
 import numpy as np
 import keras
+import tensorflow as tf
+import sys
+import cPickle as pickle
 
 from keras.models import Sequential
 from keras.engine.training import slice_X
@@ -183,20 +186,38 @@ class colors:
 	close = '\033[0m'
 
 # Parameters for the model and dataset
-TRAINING_SIZE = 100000
-DIGITS = 3
-INVERT = False
+flags = tf.app.flags
+FLAGS = flags.FLAGS
 
-# Try replacing GRU, or SimpleRNN
-RNN = recurrent.LSTM
-HIDDEN_SIZE = 50
-BATCH_SIZE = 512
-LAYERS = 2
+flags.DEFINE_integer( 'TRAINING_SIZE', 100000, 'size of training set' )
+flags.DEFINE_integer( 'DIGITS', 3, 'max number of digits in the number' )
+flags.DEFINE_boolean( 'INVERT', False, 'invert output sequence' )
 
-USE_BIDIRECTIONAL = True
+flags.DEFINE_integer( 'HIDDEN_SIZE', 50, 'size of hidden layer' )
+flags.DEFINE_integer( 'BATCH_SIZE', 512, 'batch size' )
+flags.DEFINE_integer( 'LAYERS', 2, 'nuber of hidden layers' )
+flags.DEFINE_integer( 'EPOCHS', 200, 'nuber of epochs' )
+
+flags.DEFINE_boolean( 'BIDIRECTIONAL', True, 'use bidirectional mode' )
+flags.DEFINE_string( 'CELL_TYPE', 'LSTM', 'cell type: LSTM, GRU, SimpleRNN' )
+
+flags.DEFINE_string( 'DATASET_TYPE', 'reverse_seq', 'dataset type: reverse_seq, calc, calc_old' )
+flags.DEFINE_string( 'MODEL_NAME', '', 'model file name' )
+flags.DEFINE_string( 'ACC_LOSS_FNAME', '', 'accuracy and loss file name' )
+
+flags.DEFINE_float( 'DROPOUT', 0.3, 'dropout probability' )
+
+if FLAGS.CELL_TYPE == 'LSTM':
+	RNN = recurrent.LSTM
+elif FLAGS.CELL_TYPE == 'GRU':
+	RNN = recurrent.LSTM
+elif FLAGS.CELL_TYPE == 'SimpleRNN':
+	RNN = recurrent.LSTM
+else:
+	raise ValueError( 'invalid CELL_TYPE: ' + FLAGS.CELL_TYPE )
 
 print( 'Generating data' )
-datagen = DataGenerator( TRAINING_SIZE, TRAINING_SIZE / 5, DIGITS, 'reverse_seq' )
+datagen = DataGenerator( FLAGS.TRAINING_SIZE, 0, FLAGS.DIGITS, FLAGS.DATASET_TYPE )
 
 #print( 'Validating data' )
 #datagen.validate()
@@ -219,17 +240,18 @@ model = Sequential()
 # use input_shape=(None, nb_feature).
 
 left = Sequential()
-left.add( RNN( HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ], return_sequences=True ) )
-if USE_BIDIRECTIONAL:
+left.add( RNN( FLAGS.HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ], return_sequences=True ) )
+if FLAGS.BIDIRECTIONAL:
 	right = Sequential()
-	right.add( RNN( HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ],
+	right.add( RNN( FLAGS.HIDDEN_SIZE, input_shape=[ datagen.sent_maxlen, datagen.alphabet.maxlen ],
 			 return_sequences=True, go_backwards = True ) )
 	
 	model.add( Merge( [ left, right ], mode = 'sum' ) )
 else:
 	model.add( left, mode = 'sum' )
 
-model.add( Dropout( 0.3 ) )
+if FLAGS.DROPOUT > 0.0:
+	model.add( Dropout( FLAGS.DROPOUT ) )
 
 def fork_model( model ):
 	forks = []
@@ -241,19 +263,19 @@ def fork_model( model ):
 	return forks
 
 # The decoder RNN could be multiple layers stacked or a single layer
-for _ in range( LAYERS ):
-	if USE_BIDIRECTIONAL:
+for _ in range( FLAGS.LAYERS ):
+	if FLAGS.BIDIRECTIONAL:
 		left, right = fork_model( model )
-		left.add( RNN( HIDDEN_SIZE, return_sequences=True ) )
-		right.add( RNN( HIDDEN_SIZE, return_sequences=True, go_backwards=True ) )
+		left.add( RNN( FLAGS.HIDDEN_SIZE, return_sequences=True ) )
+		right.add( RNN( FLAGS.HIDDEN_SIZE, return_sequences=True, go_backwards=True ) )
 	else:
-		model.add( RNN( HIDDEN_SIZE, return_sequences=True ) )
+		model.add( RNN( FLAGS.HIDDEN_SIZE, return_sequences=True ) )
 
-	model.add( Dropout( 0.3 ) )
+	model.add( Dropout( FLAGS.DROPOUT ) )
 
 
 # For each of step of the output sequence, decide which character should be chosen
-model.add( Dropout( 0.3 ) )
+model.add( Dropout( FLAGS.DROPOUT ) )
 model.add( TimeDistributed( Dense( len( datagen.alphabet.chars ) ) ) )
 model.add( Activation( 'softmax' ) )
 
@@ -264,48 +286,42 @@ model.compile( loss='categorical_crossentropy',
 # stream events
 keras.callbacks.RemoteMonitor( root='http://localhost:9000' )
 
-# early stopping
-keras.callbacks.EarlyStopping( monitor='val_loss', patience=0, verbose=1, mode='auto' )
-
-# model checkpoint
-keras.callbacks.ModelCheckpoint( 'model/checkpoint', monitor='val_loss', verbose=0, save_best_only=False, mode='auto' )
-
-
 # Train the model each generation and show predictions against the validation dataset
-for iteration in range( 1, 200 ):
-	print()
-	print( '-' * 50 )
-	print( 'Iteration', iteration )
+print( '-' * 20 + 'TRAINING' + '-' * 20 )
 
+x_train_in = [ X_train, X_train ] if FLAGS.BIDIRECTIONAL else X_train
+x_val_in = [ X_val, X_val ] if FLAGS.BIDIRECTIONAL else X_val
 
-	x_train_in = [ X_train, X_train ] if USE_BIDIRECTIONAL else X_train
-	x_val_in = [ X_val, X_val ] if USE_BIDIRECTIONAL else X_val
+hist = model.fit( x_train_in, y_train, batch_size=FLAGS.BATCH_SIZE,
+					nb_epoch=FLAGS.EPOCHS,
+					shuffle=True,
+					validation_data=[ x_val_in, y_val ] )
 
-	model.fit( x_train_in, y_train, batch_size=BATCH_SIZE, nb_epoch=1,
-			validation_data=[ x_val_in, y_val ] )
-	###
-	# Select 10 samples from the validation set at random so we can visualize errors
-	for i in range(10):
-		ind = np.random.randint( 0, len( X_val ) )
-		rowX, rowy = X_val[np.array([ind])], y_val[np.array([ind])]
-		q = datagen.alphabet.decode(rowX[0])
-		rowX = [ rowX, rowX ] if USE_BIDIRECTIONAL else rowX
+if FLAGS.ACC_LOSS_FNAME != '':
+	d = {}
+	d[ 'val_loss' ] = hist.history[ 'val_loss' ]
+	d[ 'val_acc' ] = hist.history[ 'val_acc' ]
+	accu_loss_file = pickle.dump( d, open( FLAGS.ACC_LOSS_FNAME, 'wb' ) )
 
-		preds = model.predict_classes(rowX, verbose=0)
+# Select 20 samples from the validation set at random so we can visualize errors
+for i in range( 20 ):
+	ind = np.random.randint( 0, len( X_val ) )
+	rowX, rowy = X_val[ np.array( [ind] ) ], y_val[ np.array( [ind] ) ]
+	q = datagen.alphabet.decode( rowX[ 0 ] )
+	rowX = [ rowX, rowX ] if FLAGS.BIDIRECTIONAL else rowX
 
-		correct = datagen.alphabet.decode(rowy[0])
-		guess = datagen.alphabet.decode(preds[0], calc_argmax=False)
-		print('Q', q[::-1] if INVERT else q)
-		print('T', correct)
-		print(colors.ok + '☑' + colors.close if correct == guess else colors.fail + '☒' + colors.close, guess)
-		print('---')
+	preds = model.predict_classes(rowX, verbose=0)
 
-	# Shuffle (X, y) in unison as the later parts of X will almost all be larger digits
-	indices = np.arange( X_train.shape[0] )
-	np.random.shuffle( indices )
-	X_train = X_train[ indices ]
-	y_train = y_train[ indices ]
+	correct = datagen.alphabet.decode(rowy[0])
+	guess = datagen.alphabet.decode(preds[0], calc_argmax=False)
+	print( 'Q', q[::-1] if FLAGS.INVERT else q )
+	print( 'A', correct)
+	print( colors.ok + '☑' + colors.close if correct == guess else colors.fail + '☒' + colors.close, guess )
+	print( '---' )
+
+print( 'last loss: {0}, acc: {1}'.format( hist.history[ 'val_loss' ][-1], hist.history[ 'val_acc' ][-1] ) )
 
 # save model
-open( 'model/model.json', 'w' ).write( model.to_json() )
-model.save_weights( 'model/model_weights.h5' )
+if FLAGS.MODEL_NAME != '':
+	open( FLAGS.MODEL_NAME + '.json', 'w' ).write( model.to_json() )
+	model.save_weights( FLAGS.MODEL_NAME + '_weights.h5' )
