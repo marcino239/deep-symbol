@@ -1,4 +1,6 @@
-class Calc( object ):
+from env import Env
+
+class Calc( Env ):
 
 	oper_2arg = { '-': lambda x,y: x - y,
 					'+': lambda x,y: x + y,
@@ -6,12 +8,18 @@ class Calc( object ):
 					'/': lambda x,y: x / y }
 
 	def __init__( self ):
+		self.total_reward = 0
+		self.reset()
+
+	def reset( self, target=None ):
 		self.acc = 0.0
 		self.oper_acc = 0.0
 		self.oper = '+'
 		self.no_decimal = True
 		self.no_oper = True
 		self.decimal_location = 1
+
+		self.target = target
 
 	def result( self ):
 		return self.acc
@@ -58,7 +66,13 @@ class Calc( object ):
 		
 		else:
 			raise ValueException( 'Invalid character: ' + c )
-			
+
+	def status( self ):
+		r = self.result()
+		check = r == self.target
+		if check:
+			self.total_reward += 1.0
+		return str( r ), check, self.total_reward
 
 if __name__ == '__main__':
 	calc = Calc()
@@ -67,4 +81,3 @@ if __name__ == '__main__':
 		c = raw_input( '<: ' )
 		calc.update( c )
 		print( ':> {0}'.format( calc.result() ) )
-
